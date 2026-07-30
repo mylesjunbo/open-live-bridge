@@ -1,0 +1,9 @@
+OpenLiveBridge
+Copyright (C) 2026 OpenLiveBridge contributors
+
+OpenLiveBridge 是自由软件，采用 GPL-2.0-or-later 许可。
+
+本项目计划集成 OBS Studio/libobs。OBS Studio 是 OBS Project 及其贡献者维护的独立开源项目，也遵循 GPL 相关条款分发。OpenLiveBridge 与 OBS Project 没有隶属或官方背书关系。
+
+当你把 OpenLiveBridge 与 OBS 运行时文件或 OBS 插件一起分发时，请同时包含相应的 OBS 许可证文件、版权声明、第三方声明、源码链接和修改说明。
+

@@ -1,0 +1,15 @@
+build/
+out/
+obs-runtime/
+.downloads/
+.vs/
+.vscode/
+*.user
+*.suo
+*.log
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
