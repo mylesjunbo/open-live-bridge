@@ -1,23 +1,17 @@
 # OpenLiveBridge
 
-OpenLiveBridge 是一个基于 `libobs` 的 Windows 直播媒体桥接程序。它通过本地控制 API 提供场景、媒体源、推流、录制和虚拟摄像头等能力，方便其他程序不直接嵌入 OBS 就能调用这些功能。
+OpenLiveBridge 是一个基于 `libobs` 的 Windows 直播媒体桥接程序。它通过本地控制 API 提供媒体源、场景编排、音频监听和虚拟摄像头控制，方便其他程序不直接嵌入 OBS 就能调用这些能力。
 
 ## 项目定位
 
 推荐的产品结构如下：
 
 ```text
-业务主程序，例如 pc-crawler.exe
-  - 授权
-  - 定时与状态机
-  - 直播地址获取
-
 OpenLiveBridge.exe
   - 本地 API
   - libobs 初始化
-  - 场景与媒体源管理
+  - 场景与媒体源编排
   - 虚拟摄像头控制
-  - 未来的推流/录制控制
 
 OBS 运行时与插件
   - libobs
@@ -25,7 +19,7 @@ OBS 运行时与插件
   - win-dshow 虚拟摄像头模块
 ```
 
-把 OpenLiveBridge 单独做成进程，可以让业务主程序保留清晰的 IPC 边界，也能把 OBS/GPL 相关代码控制在这个开源组件里。
+上层业务程序可以通过本地 HTTP API 与 OpenLiveBridge 协作，保持各自职责清晰。
 
 如果系统里已经安装了 OBS，也不会影响这个项目的正常运行，只要始终使用项目自带的 `obs-runtime`，并保持自己的虚拟摄像头 CLSID 不和别的安装复用。
 
@@ -47,7 +41,7 @@ OBS 运行时与插件
 
 如果你需要自定义虚拟摄像头名称和设备 ID，长期方案应该是在你 fork 的 OBS `win-dshow` 虚拟摄像头模块源码里修改，而不是安装后再改注册表。
 
-当前发行版只支持 x64，不再打包 32 位虚拟摄像头模块。
+当前主程序按 x64 为主构建和验证；`obs-runtime` 目录里同时保留 32/64 位虚拟摄像头模块文件，便于注册检查。
 
 默认虚拟摄像头身份：
 
@@ -107,7 +101,7 @@ Content-Type: application/json
 }
 ```
 
-当前版本的开始接口只需要 `url`，其他媒体参数已回退到程序内部默认值。
+开始接口的最小请求只需要 `url`；也可以用 `startVirtualCamera` 控制是否联动启动虚拟摄像头。
 
 停止虚拟摄像头输出：
 
@@ -120,10 +114,9 @@ POST /api/v1/stop
 OBS 源码基线版本：
 
 - OBS Studio 32.1.2
-- 官方 Latest 发布日期：2026-04-21
 - 源码来源：https://github.com/obsproject/obs-studio/releases/tag/32.1.2
 
-OBS 虚拟摄像头二开参数：
+OBS 虚拟摄像头自定义构建参数：
 
 ```powershell
 .\packaging\obs\set-virtualcam-name.ps1 -ObsSourceRoot "D:\path\to\obs-studio"
@@ -138,7 +131,7 @@ D:\project\open-live-bridge
 D:\project\obs-studio-openlivebridge
 ```
 
-OpenLiveBridge 负责控制与编排，OBS 源码 fork 单独放在兄弟目录里，后续拉上游、切分支、编译虚拟摄像头 DLL 会更顺手。
+OpenLiveBridge 负责控制与编排，OBS 源码 fork 建议单独放在兄弟目录或独立仓库里；这样后续拉上游、切分支、编译虚拟摄像头 DLL 都更顺手。
 
 本地 OBS 运行时已集成到：
 
@@ -146,7 +139,7 @@ OpenLiveBridge 负责控制与编排，OBS 源码 fork 单独放在兄弟目录�
 D:\project\open-live-bridge\obs-runtime
 ```
 
-其中除 `obs-virtualcam-module32.dll` / `obs-virtualcam-module64.dll` 外，其余运行时文件均来自官方 OBS Studio 32.1.2 x64 发布包。
+其中大部分运行时文件基于官方 OBS Studio 32.1.2 发布包整理，虚拟摄像头模块使用本项目自定义构建版本。
 
 先构建不依赖 OBS SDK 的基础版本：
 

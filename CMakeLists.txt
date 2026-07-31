@@ -46,6 +46,19 @@ if(OPENLIVEBRIDGE_WITH_LIBOBS)
     find_package(LibObs REQUIRED)
     target_link_libraries(OpenLiveBridge PRIVATE LibObs::LibObs)
     target_compile_definitions(OpenLiveBridge PRIVATE OPENLIVEBRIDGE_WITH_LIBOBS=1)
+
+    set(OPENLIVEBRIDGE_OBS_RUNTIME_BIN "${CMAKE_CURRENT_SOURCE_DIR}/obs-runtime/bin/64bit")
+    if(WIN32 AND EXISTS "${OPENLIVEBRIDGE_OBS_RUNTIME_BIN}")
+        file(GLOB OPENLIVEBRIDGE_OBS_RUNTIME_DLLS CONFIGURE_DEPENDS
+            "${OPENLIVEBRIDGE_OBS_RUNTIME_BIN}/*.dll")
+        if(OPENLIVEBRIDGE_OBS_RUNTIME_DLLS)
+            add_custom_command(TARGET OpenLiveBridge POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${OPENLIVEBRIDGE_OBS_RUNTIME_DLLS}
+                    "$<TARGET_FILE_DIR:OpenLiveBridge>"
+                COMMENT "Copying OBS runtime DLLs next to OpenLiveBridge")
+        endif()
+    endif()
 else()
     target_compile_definitions(OpenLiveBridge PRIVATE OPENLIVEBRIDGE_WITH_LIBOBS=0)
 endif()

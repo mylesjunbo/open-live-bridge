@@ -553,7 +553,38 @@ void ApplyAudioMonitoringMode(obs_source_t* source, AudioMonitoringMode mode)
     }
 }
 
-bool StopMediaSourceByName(const std::string& sourceName)
+bool RemoveMediaSourceSceneItem(const std::string& sceneName, const std::string& sourceName)
+{
+    if (sceneName.empty() || sourceName.empty()) {
+        return false;
+    }
+
+    obs_source_t* sceneSource = obs_get_source_by_name(sceneName.c_str());
+    if (!sceneSource) {
+        return false;
+    }
+
+    obs_scene_t* scene = obs_scene_from_source(sceneSource);
+    if (!scene) {
+        obs_source_release(sceneSource);
+        return false;
+    }
+
+    obs_sceneitem_t* sceneItem = obs_scene_find_source(scene, sourceName.c_str());
+    if (!sceneItem) {
+        obs_source_release(sceneSource);
+        return false;
+    }
+
+    obs_sceneitem_remove(sceneItem);
+    obs_source_release(sceneSource);
+    return true;
+}
+
+bool StopMediaSourceByName(
+    const std::string& sceneName,
+    const std::string& sourceName,
+    AudioProbeState* audioProbe)
 {
     if (sourceName.empty()) {
         return true;
@@ -561,12 +592,27 @@ bool StopMediaSourceByName(const std::string& sourceName)
 
     obs_source_t* mediaSource = obs_get_source_by_name(sourceName.c_str());
     if (!mediaSource) {
+        RemoveMediaSourceSceneItem(sceneName, sourceName);
+        obs_set_output_source(0, nullptr);
+        if (audioProbe) {
+            audioProbe->Reset();
+        }
         return true;
     }
 
+    ApplyAudioMonitoringMode(mediaSource, AudioMonitoringMode::None);
+    obs_set_output_source(0, nullptr);
     obs_source_media_stop(mediaSource);
+    if (audioProbe) {
+        obs_source_remove_audio_capture_callback(mediaSource, MediaSourceAudioProbeCallback, audioProbe);
+    }
+    RemoveMediaSourceSceneItem(sceneName, sourceName);
+    obs_source_remove(mediaSource);
+    if (audioProbe) {
+        audioProbe->Reset();
+    }
     obs_source_release(mediaSource);
-    Log(LogLevel::Info, "media source stopped");
+    Log(LogLevel::Info, "media source removed and audio monitoring disabled");
     return true;
 }
 
@@ -860,6 +906,9 @@ bool LibObsController::SetMediaSource(const std::string& url, std::string* error
     }
 
     obs_sceneitem_t* sceneItem = obs_scene_find_source(scene, impl_->config.sourceName.c_str());
+    if (sceneItem) {
+        obs_sceneitem_set_visible(sceneItem, true);
+    }
     obs_set_output_source(0, obs_scene_get_source(scene));
     obs_source_media_restart(mediaSource);
 
@@ -1078,15 +1127,16 @@ bool LibObsController::StopVirtualCamera(std::string* error)
     }
     return false;
 #else
-    StopMediaSourceByName(impl_->config.sourceName);
-
     if (!impl_->virtualCameraOutput) {
+        StopMediaSourceByName(impl_->config.sceneName, impl_->config.sourceName, &impl_->audioProbe);
         return true;
     }
 
     if (obs_output_active(impl_->virtualCameraOutput)) {
         obs_output_stop(impl_->virtualCameraOutput);
     }
+
+    StopMediaSourceByName(impl_->config.sceneName, impl_->config.sourceName, &impl_->audioProbe);
 
     Log(LogLevel::Info, "virtual camera stopped");
     return true;
@@ -1097,7 +1147,7 @@ void LibObsController::Shutdown()
 {
 #if OPENLIVEBRIDGE_WITH_LIBOBS
     DetachAudioProbeByName(impl_->config.sourceName, &impl_->audioProbe);
-    StopMediaSourceByName(impl_->config.sourceName);
+    StopMediaSourceByName(impl_->config.sceneName, impl_->config.sourceName, &impl_->audioProbe);
 
     if (impl_->virtualCameraOutput) {
         if (obs_output_active(impl_->virtualCameraOutput)) {
