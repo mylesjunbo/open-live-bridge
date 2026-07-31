@@ -294,25 +294,6 @@ std::optional<bool> ExtractJsonBool(const std::string& body, const std::string& 
     return std::nullopt;
 }
 
-std::optional<std::uint32_t> ExtractJsonUInt(const std::string& body, const std::string& key)
-{
-    const auto valueStart = FindJsonValueStart(body, key);
-    if (!valueStart || !std::isdigit(static_cast<unsigned char>(body[*valueStart]))) {
-        return std::nullopt;
-    }
-
-    std::size_t end = *valueStart;
-    while (end < body.size() && std::isdigit(static_cast<unsigned char>(body[end]))) {
-        ++end;
-    }
-
-    try {
-        return static_cast<std::uint32_t>(std::stoul(body.substr(*valueStart, end - *valueStart)));
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
-}
-
 std::optional<bool> ExtractJsonBoolAlias(
     const std::string& body,
     const std::string& primaryKey,

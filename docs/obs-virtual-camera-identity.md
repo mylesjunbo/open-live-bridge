@@ -72,12 +72,6 @@ hr = fm->RegisterFilter(
 L"OpenLiveBridge Virtual Camera"
 ```
 
-为了少改代码，你也可以直接运行仓库里附带的脚本，只替换虚拟摄像头名称：
-
-```powershell
-.\packaging\obs\set-virtualcam-name.ps1 -ObsSourceRoot "D:\path\to\obs-studio"
-```
-
 CLSID 不建议直接硬写在 `virtualcam-module.cpp` 里。当前 OBS 的虚拟摄像头模块已经通过 CMake 变量 `VIRTUALCAM_GUID` 生成 `CLSID_OBS_VirtualVideo`：
 
 ```text

@@ -119,7 +119,6 @@ OBS 源码基线版本：
 OBS 虚拟摄像头自定义构建参数：
 
 ```powershell
-.\packaging\obs\set-virtualcam-name.ps1 -ObsSourceRoot "D:\path\to\obs-studio"
 cmake --preset windows-x64 -DVIRTUALCAM_GUID:STRING=634ed3f8-eaa2-4e70-93f0-185337ef9b48
 cmake --build --preset windows-x64 --target obs-virtualcam-module
 ```
