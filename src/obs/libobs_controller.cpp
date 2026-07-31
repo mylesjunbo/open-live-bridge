@@ -4,10 +4,16 @@
 
 #include "open_live_bridge/util/logger.h"
 
-#include <filesystem>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cctype>
+#include <cstdint>
+#include <filesystem>
 #include <sstream>
 #include <utility>
+#include <vector>
 #include <thread>
 
 #if defined(_WIN32)
@@ -20,8 +26,26 @@
 
 namespace olb {
 
+struct AudioProbeState {
+    std::atomic<std::uint64_t> framesObserved{0};
+    std::atomic<std::uint64_t> nonSilentCallbacks{0};
+    std::atomic<std::uint32_t> peakPpm{0};
+
+    void Reset()
+    {
+        framesObserved.store(0);
+        nonSilentCallbacks.store(0);
+        peakPpm.store(0);
+    }
+};
+
+struct AudioDeviceListState {
+    std::vector<AudioMonitoringDeviceInfo>* devices = nullptr;
+};
+
 struct LibObsController::Impl {
     BridgeConfig config;
+    AudioProbeState audioProbe;
     bool initialized = false;
 
 #if OPENLIVEBRIDGE_WITH_LIBOBS
@@ -113,12 +137,10 @@ bool ValidateObsRoot(const std::string& obsRoot, std::string* error)
 
     const auto pluginBin = JoinPath(obsRoot, "obs-plugins/64bit");
     const auto pluginData = JoinPath(obsRoot, "data/obs-plugins");
-    const auto libObsData = JoinPath(obsRoot, "data/libobs");
     const auto studioData = JoinPath(obsRoot, "data/obs-studio");
 
     if (!std::filesystem::exists(pluginBin) ||
         !std::filesystem::exists(pluginData) ||
-        !std::filesystem::exists(libObsData) ||
         !std::filesystem::exists(studioData)) {
         if (error) {
             *error = "OBS runtime root is incomplete: " + obsRoot;
@@ -251,6 +273,300 @@ bool ResetObsAudio(std::string* error)
         return false;
     }
 
+    return true;
+}
+
+bool LooksLikeLocalFile(const std::string& value)
+{
+    if (value.empty()) {
+        return false;
+    }
+
+    if (value.rfind("file://", 0) == 0) {
+        return true;
+    }
+
+#if defined(_WIN32)
+    if (value.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(value[0])) &&
+        value[1] == ':' &&
+        (value[2] == '\\' || value[2] == '/')) {
+        return true;
+    }
+
+    if (value.rfind("\\\\", 0) == 0) {
+        return true;
+    }
+#endif
+
+    return std::filesystem::exists(value);
+}
+
+bool CollectAudioMonitoringDevice(void* param, const char* name, const char* id)
+{
+    auto* state = static_cast<AudioDeviceListState*>(param);
+    if (!state || !state->devices) {
+        return false;
+    }
+
+    AudioMonitoringDeviceInfo device;
+    device.name = name ? name : "";
+    device.id = id ? id : "";
+    state->devices->push_back(std::move(device));
+    return true;
+}
+
+bool LoadAudioMonitoringDevices(
+    std::vector<AudioMonitoringDeviceInfo>* devices,
+    std::string* error)
+{
+    if (!devices) {
+        if (error) {
+            *error = "missing audio device output";
+        }
+        return false;
+    }
+
+    if (!obs_audio_monitoring_available()) {
+        if (error) {
+            *error = "audio monitoring is not available in this libobs build";
+        }
+        return false;
+    }
+
+    devices->clear();
+    devices->push_back({"Default", "default"});
+
+    AudioDeviceListState state;
+    state.devices = devices;
+    obs_enum_audio_monitoring_devices(CollectAudioMonitoringDevice, &state);
+    return true;
+}
+
+AudioMonitoringDeviceInfo NormalizeAudioMonitoringDevice(AudioMonitoringDeviceInfo device)
+{
+    if (device.id.empty()) {
+        device.id = "default";
+    }
+
+    if (device.name.empty()) {
+        device.name = device.id == "default" ? "Default" : device.id;
+    }
+
+    return device;
+}
+
+std::string ToLowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool StringEqualsRelaxed(const std::string& left, const std::string& right)
+{
+    return left == right || ToLowerAscii(left) == ToLowerAscii(right);
+}
+
+bool MatchesAudioMonitoringDevice(
+    const AudioMonitoringDeviceInfo& device,
+    const AudioMonitoringDeviceInfo& selector)
+{
+    if (!selector.id.empty() &&
+        (StringEqualsRelaxed(device.id, selector.id) ||
+         StringEqualsRelaxed(device.name, selector.id))) {
+        return true;
+    }
+
+    if (!selector.name.empty() &&
+        (StringEqualsRelaxed(device.name, selector.name) ||
+         StringEqualsRelaxed(device.id, selector.name))) {
+        return true;
+    }
+
+    return false;
+}
+
+bool ResolveAudioMonitoringDevice(
+    const AudioMonitoringDeviceInfo& selector,
+    AudioMonitoringDeviceInfo* resolved,
+    std::string* error)
+{
+    if (!resolved) {
+        if (error) {
+            *error = "missing resolved audio device output";
+        }
+        return false;
+    }
+
+    if (selector.id.empty() && selector.name.empty()) {
+        *resolved = {"Default", "default"};
+        return true;
+    }
+
+    if (StringEqualsRelaxed(selector.id, "default") || StringEqualsRelaxed(selector.name, "default")) {
+        *resolved = {"Default", "default"};
+        return true;
+    }
+
+    std::vector<AudioMonitoringDeviceInfo> devices;
+    if (!LoadAudioMonitoringDevices(&devices, error)) {
+        return false;
+    }
+
+    for (const auto& device : devices) {
+        if (MatchesAudioMonitoringDevice(device, selector)) {
+            *resolved = NormalizeAudioMonitoringDevice(device);
+            return true;
+        }
+    }
+
+    if (error) {
+        const auto& query = !selector.id.empty() ? selector.id : selector.name;
+        *error = "audio monitoring device was not found: " + query;
+    }
+    return false;
+}
+
+bool ApplyAudioMonitoringDevice(
+    const AudioMonitoringDeviceInfo& selector,
+    std::string* error)
+{
+    AudioMonitoringDeviceInfo resolved;
+    if (!ResolveAudioMonitoringDevice(selector, &resolved, error)) {
+        return false;
+    }
+
+    if (!obs_set_audio_monitoring_device(resolved.name.c_str(), resolved.id.c_str())) {
+        if (error) {
+            *error = "failed to set audio monitoring device: " + resolved.id;
+        }
+        return false;
+    }
+
+    Log(LogLevel::Info, "using audio monitoring device: " + resolved.name + " (" + resolved.id + ")");
+    return true;
+}
+
+bool ConfigureAudioMonitoringDevice(const BridgeConfig& config, std::string* error)
+{
+    if (config.audioMonitoringDeviceId.empty()) {
+        return true;
+    }
+
+    return ApplyAudioMonitoringDevice({config.audioMonitoringDeviceId, config.audioMonitoringDeviceId}, error);
+}
+
+void StoreAudioPeak(AudioProbeState* probe, std::uint32_t peakPpm)
+{
+    if (!probe) {
+        return;
+    }
+
+    auto current = probe->peakPpm.load();
+    while (peakPpm > current &&
+           !probe->peakPpm.compare_exchange_weak(current, peakPpm)) {
+    }
+}
+
+void MediaSourceAudioProbeCallback(
+    void* param,
+    obs_source_t*,
+    const struct audio_data* audioData,
+    bool muted)
+{
+    auto* probe = static_cast<AudioProbeState*>(param);
+    if (!probe || !audioData || audioData->frames == 0) {
+        return;
+    }
+
+    probe->framesObserved.fetch_add(audioData->frames);
+
+    if (muted) {
+        return;
+    }
+
+    float peak = 0.0f;
+    for (std::size_t plane = 0; plane < MAX_AV_PLANES; ++plane) {
+        const auto* samples = reinterpret_cast<const float*>(audioData->data[plane]);
+        if (!samples) {
+            continue;
+        }
+
+        for (std::uint32_t frame = 0; frame < audioData->frames; ++frame) {
+            peak = std::max(peak, std::fabs(samples[frame]));
+        }
+    }
+
+    const auto peakPpm =
+        static_cast<std::uint32_t>(std::min(1000000.0f, peak * 1000000.0f));
+    StoreAudioPeak(probe, peakPpm);
+
+    if (peakPpm > 1000) {
+        probe->nonSilentCallbacks.fetch_add(1);
+    }
+}
+
+void AttachAudioProbe(obs_source_t* source, AudioProbeState* probe)
+{
+    if (!source || !probe) {
+        return;
+    }
+
+    probe->Reset();
+    obs_source_remove_audio_capture_callback(source, MediaSourceAudioProbeCallback, probe);
+    obs_source_add_audio_capture_callback(source, MediaSourceAudioProbeCallback, probe);
+}
+
+void DetachAudioProbeByName(const std::string& sourceName, AudioProbeState* probe)
+{
+    if (sourceName.empty() || !probe) {
+        return;
+    }
+
+    obs_source_t* source = obs_get_source_by_name(sourceName.c_str());
+    if (!source) {
+        return;
+    }
+
+    obs_source_remove_audio_capture_callback(source, MediaSourceAudioProbeCallback, probe);
+    obs_source_release(source);
+}
+
+void ApplyAudioMonitoringMode(obs_source_t* source, AudioMonitoringMode mode)
+{
+    if (!source) {
+        return;
+    }
+
+    switch (mode) {
+    case AudioMonitoringMode::None:
+        obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_NONE);
+        break;
+    case AudioMonitoringMode::MonitorOnly:
+        obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_MONITOR_ONLY);
+        break;
+    case AudioMonitoringMode::MonitorAndOutput:
+        obs_source_set_monitoring_type(source, OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT);
+        break;
+    }
+}
+
+bool StopMediaSourceByName(const std::string& sourceName)
+{
+    if (sourceName.empty()) {
+        return true;
+    }
+
+    obs_source_t* mediaSource = obs_get_source_by_name(sourceName.c_str());
+    if (!mediaSource) {
+        return true;
+    }
+
+    obs_source_media_stop(mediaSource);
+    obs_source_release(mediaSource);
+    Log(LogLevel::Info, "media source stopped");
     return true;
 }
 
@@ -411,11 +727,15 @@ bool LibObsController::Initialize(const BridgeConfig& config, std::string* error
         Log(LogLevel::Info, "using OBS runtime root: " + impl_->config.obsRoot);
         const auto pluginBin = JoinPath(impl_->config.obsRoot, "obs-plugins/64bit");
         const auto pluginData = JoinPath(impl_->config.obsRoot, "data/obs-plugins/%module%");
-        const auto libObsData = EnsureTrailingSlash(JoinObsPath(impl_->config.obsRoot, "data/libobs"));
+        const auto libObsDataPath = EnsureTrailingSlash(JoinObsPath(impl_->config.obsRoot, "data/libobs"));
         const auto studioData = EnsureTrailingSlash(JoinObsPath(impl_->config.obsRoot, "data/obs-studio"));
 
         obs_add_module_path(pluginBin.c_str(), pluginData.c_str());
-        obs_add_data_path(libObsData.c_str());
+        if (std::filesystem::exists(libObsDataPath)) {
+            obs_add_data_path(libObsDataPath.c_str());
+        } else {
+            Log(LogLevel::Warning, "OBS data path missing: " + libObsDataPath);
+        }
         obs_add_data_path(studioData.c_str());
     }
 
@@ -432,6 +752,16 @@ bool LibObsController::Initialize(const BridgeConfig& config, std::string* error
     if (!ResetObsAudio(error)) {
         obs_shutdown();
         return false;
+    }
+
+    if (!ConfigureAudioMonitoringDevice(impl_->config, error)) {
+        obs_shutdown();
+        return false;
+    }
+
+    if (impl_->config.audioMonitoringMode != AudioMonitoringMode::None &&
+        impl_->config.audioMonitoringDeviceId.empty()) {
+        Log(LogLevel::Info, "using default audio monitoring device");
     }
 
     impl_->initialized = true;
@@ -455,9 +785,16 @@ bool LibObsController::SetMediaSource(const std::string& url, std::string* error
         return false;
     }
 
+    const bool isLocalFile = LooksLikeLocalFile(url);
+
     obs_data_t* settings = obs_data_create();
-    obs_data_set_bool(settings, "is_local_file", false);
-    obs_data_set_string(settings, "input", url.c_str());
+    obs_data_set_bool(settings, "is_local_file", isLocalFile);
+    if (isLocalFile) {
+        obs_data_set_string(settings, "local_file", url.c_str());
+        obs_data_set_bool(settings, "looping", false);
+    } else {
+        obs_data_set_string(settings, "input", url.c_str());
+    }
     obs_data_set_bool(settings, "clear_on_media_end", true);
     obs_data_set_bool(settings, "restart_on_activate", true);
     obs_data_set_bool(settings, "linear_alpha", false);
@@ -487,6 +824,10 @@ bool LibObsController::SetMediaSource(const std::string& url, std::string* error
         }
         return false;
     }
+
+    AttachAudioProbe(mediaSource, &impl_->audioProbe);
+    ApplyAudioMonitoringMode(mediaSource, impl_->config.audioMonitoringMode);
+    Log(LogLevel::Info, "audio monitoring mode: " + std::string(ToString(impl_->config.audioMonitoringMode)));
 
     obs_source_t* sceneSource = obs_get_source_by_name(impl_->config.sceneName.c_str());
     obs_scene_t* scene = nullptr;
@@ -579,6 +920,7 @@ bool LibObsController::RestartMediaSource(std::string* error)
         return false;
     }
 
+    impl_->audioProbe.Reset();
     obs_source_media_restart(mediaSource);
     obs_source_release(mediaSource);
 
@@ -609,12 +951,72 @@ MediaSourceRuntimeStatus LibObsController::GetMediaSourceStatus() const
 
     status.exists = true;
     status.active = obs_source_active(source);
+    status.audioActive = obs_source_audio_active(source);
+    status.audioFramesObserved = impl_->audioProbe.framesObserved.load();
+    status.audioObserved = impl_->audioProbe.nonSilentCallbacks.load() > 0;
+    status.audioPeak = static_cast<double>(impl_->audioProbe.peakPpm.load()) / 1000000.0;
     status.width = obs_source_get_width(source);
     status.height = obs_source_get_height(source);
     status.state = ObsMediaStateToString(obs_source_media_get_state(source));
 
     obs_source_release(source);
     return status;
+#endif
+}
+
+bool LibObsController::GetAudioMonitoringDevices(
+    std::vector<AudioMonitoringDeviceInfo>* devices,
+    std::string* error) const
+{
+#if !OPENLIVEBRIDGE_WITH_LIBOBS
+    if (error) {
+        *error = "libobs backend is not enabled";
+    }
+    return false;
+#else
+    if (!impl_->initialized) {
+        if (error) {
+            *error = "libobs is not initialized";
+        }
+        return false;
+    }
+
+    if (!devices) {
+        if (error) {
+            *error = "missing audio device output";
+        }
+        return false;
+    }
+
+    return LoadAudioMonitoringDevices(devices, error);
+#endif
+}
+
+bool LibObsController::SetAudioMonitoringDevice(
+    const AudioMonitoringDeviceInfo& device,
+    std::string* error)
+{
+#if !OPENLIVEBRIDGE_WITH_LIBOBS
+    if (error) {
+        *error = "libobs backend is not enabled";
+    }
+    return false;
+#else
+    if (!impl_->initialized) {
+        if (error) {
+            *error = "libobs is not initialized";
+        }
+        return false;
+    }
+
+    if (!obs_audio_monitoring_available()) {
+        if (error) {
+            *error = "audio monitoring is not available in this libobs build";
+        }
+        return false;
+    }
+
+    return ApplyAudioMonitoringDevice(device, error);
 #endif
 }
 
@@ -676,6 +1078,8 @@ bool LibObsController::StopVirtualCamera(std::string* error)
     }
     return false;
 #else
+    StopMediaSourceByName(impl_->config.sourceName);
+
     if (!impl_->virtualCameraOutput) {
         return true;
     }
@@ -692,6 +1096,9 @@ bool LibObsController::StopVirtualCamera(std::string* error)
 void LibObsController::Shutdown()
 {
 #if OPENLIVEBRIDGE_WITH_LIBOBS
+    DetachAudioProbeByName(impl_->config.sourceName, &impl_->audioProbe);
+    StopMediaSourceByName(impl_->config.sourceName);
+
     if (impl_->virtualCameraOutput) {
         if (obs_output_active(impl_->virtualCameraOutput)) {
             obs_output_stop(impl_->virtualCameraOutput);

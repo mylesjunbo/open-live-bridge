@@ -5,6 +5,7 @@
 #include "open_live_bridge/api_types.h"
 
 #include <string>
+#include <vector>
 
 namespace olb {
 
@@ -16,6 +17,8 @@ public:
     virtual bool SetMediaSource(const std::string& url, std::string* error) = 0;
     virtual bool RestartMediaSource(std::string* error) = 0;
     virtual MediaSourceRuntimeStatus GetMediaSourceStatus() const = 0;
+    virtual bool GetAudioMonitoringDevices(std::vector<AudioMonitoringDeviceInfo>* devices, std::string* error) const = 0;
+    virtual bool SetAudioMonitoringDevice(const AudioMonitoringDeviceInfo& device, std::string* error) = 0;
     virtual bool StartVirtualCamera(std::string* error) = 0;
     virtual bool StopVirtualCamera(std::string* error) = 0;
     virtual void Shutdown() = 0;

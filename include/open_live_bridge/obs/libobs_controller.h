@@ -17,6 +17,8 @@ public:
     bool SetMediaSource(const std::string& url, std::string* error) override;
     bool RestartMediaSource(std::string* error) override;
     MediaSourceRuntimeStatus GetMediaSourceStatus() const override;
+    bool GetAudioMonitoringDevices(std::vector<AudioMonitoringDeviceInfo>* devices, std::string* error) const override;
+    bool SetAudioMonitoringDevice(const AudioMonitoringDeviceInfo& device, std::string* error) override;
     bool StartVirtualCamera(std::string* error) override;
     bool StopVirtualCamera(std::string* error) override;
     void Shutdown() override;

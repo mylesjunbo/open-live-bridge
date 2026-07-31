@@ -14,6 +14,9 @@ MediaBridgeService::MediaBridgeService(std::unique_ptr<ObsController> obsControl
     , config_(std::move(config))
 {
     status_.virtualCamera = config_.virtualCamera;
+    status_.audioMonitoringMode = config_.audioMonitoringMode;
+    status_.audioMonitoringDeviceName = config_.audioMonitoringDeviceId.empty() ? "Default" : config_.audioMonitoringDeviceId;
+    status_.audioMonitoringDeviceId = config_.audioMonitoringDeviceId.empty() ? "default" : config_.audioMonitoringDeviceId;
 }
 
 bool MediaBridgeService::Warmup(std::string* error)
@@ -110,6 +113,44 @@ bool MediaBridgeService::Stop(std::string* error)
     status_.currentUrl.clear();
     status_.state = BridgeState::Idle;
     Log(LogLevel::Info, "media bridge stopped");
+    return true;
+}
+
+bool MediaBridgeService::ListAudioMonitoringDevices(
+    std::vector<AudioMonitoringDeviceInfo>* devices,
+    std::string* error)
+{
+    std::lock_guard lock(mutex_);
+
+    if (!EnsureObsInitialized(error)) {
+        return false;
+    }
+
+    return obsController_->GetAudioMonitoringDevices(devices, error);
+}
+
+bool MediaBridgeService::SetAudioMonitoringDevice(
+    const AudioMonitoringDeviceInfo& device,
+    std::string* error)
+{
+    std::lock_guard lock(mutex_);
+
+    status_.lastError.clear();
+
+    if (!EnsureObsInitialized(error)) {
+        return false;
+    }
+
+    if (!obsController_->SetAudioMonitoringDevice(device, error)) {
+        SetErrorLocked(error ? *error : "failed to set audio monitoring device");
+        return false;
+    }
+
+    const auto normalizedId = device.id.empty() ? std::string("default") : device.id;
+    const auto normalizedName = device.name.empty() ? (normalizedId == "default" ? "Default" : normalizedId) : device.name;
+    status_.audioMonitoringDeviceName = normalizedName;
+    status_.audioMonitoringDeviceId = normalizedId;
+    Log(LogLevel::Info, "audio monitoring device changed: " + status_.audioMonitoringDeviceId);
     return true;
 }
 

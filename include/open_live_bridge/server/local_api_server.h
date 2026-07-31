@@ -19,7 +19,7 @@ struct HttpRequest {
 
 struct HttpResponse {
     int statusCode = 200;
-    std::string contentType = "application/json";
+    std::string contentType = "application/json; charset=utf-8";
     std::string body;
 };
 
@@ -40,4 +40,3 @@ private:
 };
 
 } // namespace olb
-

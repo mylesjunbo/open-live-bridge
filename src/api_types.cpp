@@ -2,6 +2,7 @@
 
 #include "open_live_bridge/api_types.h"
 
+#include <vector>
 #include <sstream>
 
 namespace olb {
@@ -38,6 +39,20 @@ const char* ToString(VideoFitMode mode)
     return "unknown";
 }
 
+const char* ToString(AudioMonitoringMode mode)
+{
+    switch (mode) {
+    case AudioMonitoringMode::None:
+        return "none";
+    case AudioMonitoringMode::MonitorOnly:
+        return "monitor";
+    case AudioMonitoringMode::MonitorAndOutput:
+        return "both";
+    }
+
+    return "unknown";
+}
+
 bool ParseVideoFitMode(std::string_view value, VideoFitMode* mode)
 {
     if (!mode) {
@@ -56,6 +71,30 @@ bool ParseVideoFitMode(std::string_view value, VideoFitMode* mode)
 
     if (value == "stretch") {
         *mode = VideoFitMode::Stretch;
+        return true;
+    }
+
+    return false;
+}
+
+bool ParseAudioMonitoringMode(std::string_view value, AudioMonitoringMode* mode)
+{
+    if (!mode) {
+        return false;
+    }
+
+    if (value == "none" || value == "off" || value == "disabled") {
+        *mode = AudioMonitoringMode::None;
+        return true;
+    }
+
+    if (value == "monitor" || value == "monitor-only" || value == "monitor_only") {
+        *mode = AudioMonitoringMode::MonitorOnly;
+        return true;
+    }
+
+    if (value == "both" || value == "monitor-and-output" || value == "monitor_and_output" || value == "output") {
+        *mode = AudioMonitoringMode::MonitorAndOutput;
         return true;
     }
 
@@ -111,9 +150,37 @@ std::string MediaSourceStatusToJson(const MediaSourceRuntimeStatus& status)
     out << "\"state\":\"" << JsonEscape(status.state) << "\",";
     out << "\"exists\":" << (status.exists ? "true" : "false") << ",";
     out << "\"active\":" << (status.active ? "true" : "false") << ",";
+    out << "\"audioActive\":" << (status.audioActive ? "true" : "false") << ",";
+    out << "\"audioObserved\":" << (status.audioObserved ? "true" : "false") << ",";
+    out << "\"audioFramesObserved\":" << status.audioFramesObserved << ",";
+    out << "\"audioPeak\":" << status.audioPeak << ",";
     out << "\"width\":" << status.width << ",";
     out << "\"height\":" << status.height;
     out << "}";
+    return out.str();
+}
+
+std::string AudioMonitoringDeviceToJson(const AudioMonitoringDeviceInfo& device)
+{
+    std::ostringstream out;
+    out << "{";
+    out << "\"name\":\"" << JsonEscape(device.name) << "\",";
+    out << "\"id\":\"" << JsonEscape(device.id) << "\"";
+    out << "}";
+    return out.str();
+}
+
+std::string AudioMonitoringDevicesToJson(const std::vector<AudioMonitoringDeviceInfo>& devices)
+{
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        out << AudioMonitoringDeviceToJson(devices[i]);
+    }
+    out << "]";
     return out.str();
 }
 
@@ -126,6 +193,9 @@ std::string StatusToJson(const BridgeStatus& status)
     out << "\"lastError\":\"" << JsonEscape(status.lastError) << "\",";
     out << "\"obsInitialized\":" << (status.obsInitialized ? "true" : "false") << ",";
     out << "\"virtualCameraActive\":" << (status.virtualCameraActive ? "true" : "false") << ",";
+    out << "\"audioMonitoringMode\":\"" << ToString(status.audioMonitoringMode) << "\",";
+    out << "\"audioMonitoringDeviceName\":\"" << JsonEscape(status.audioMonitoringDeviceName) << "\",";
+    out << "\"audioMonitoringDeviceId\":\"" << JsonEscape(status.audioMonitoringDeviceId) << "\",";
     out << "\"mediaSource\":" << MediaSourceStatusToJson(status.mediaSource) << ",";
     out << "\"virtualCamera\":" << RegistrationStatusToJson(status.virtualCamera, status.virtualCameraRegistration);
     out << "}";

@@ -16,6 +16,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -24,6 +25,7 @@ struct RuntimeOptions {
     std::uint16_t port = 27177;
     olb::BridgeConfig bridgeConfig;
     bool checkVirtualCamera = false;
+    bool listAudioMonitoringDevices = false;
 };
 
 void PrintHelp()
@@ -42,6 +44,9 @@ void PrintHelp()
         << "  --height <px>            OBS 基础/输出高度，默认：1280\n"
         << "  --fps <fps>              OBS 输出帧率，默认：30\n"
         << "  --fit-mode <mode>        Video fit mode: contain, cover, stretch. Default: contain\n"
+        << "  --audio-monitoring-mode <mode> Audio route: none, monitor, both. Default: both\n"
+        << "  --audio-monitoring-device <id>  Audio monitoring device id. Default uses OBS/system default.\n"
+        << "  --list-audio-monitoring-devices  Print available audio monitoring devices and exit.\n"
         << "  --match-source-size      Match OBS output size to the media source.\n"
         << "  --scene-name <name>      OBS 场景名称，默认：OLB_MAIN_SCENE\n"
         << "  --source-name <name>     OBS 媒体源名称，默认：OLB_MEDIA_SOURCE\n"
@@ -126,6 +131,20 @@ bool ParseOptions(int argc, char** argv, RuntimeOptions* options)
                 std::cerr << "invalid fit mode; use contain, cover, or stretch\n";
                 return false;
             }
+        } else if (arg == "--audio-monitoring-mode") {
+            auto value = requireValue("--audio-monitoring-mode");
+            if (!value || !olb::ParseAudioMonitoringMode(*value, &options->bridgeConfig.audioMonitoringMode)) {
+                std::cerr << "invalid audio monitoring mode; use none, monitor, or both\n";
+                return false;
+            }
+        } else if (arg == "--audio-monitoring-device") {
+            auto value = requireValue("--audio-monitoring-device");
+            if (!value) {
+                return false;
+            }
+            options->bridgeConfig.audioMonitoringDeviceId = *value;
+        } else if (arg == "--list-audio-monitoring-devices") {
+            options->listAudioMonitoringDevices = true;
         } else if (arg == "--match-source-size") {
             options->bridgeConfig.matchSourceSize = true;
         } else if (arg == "--scene-name") {
@@ -306,6 +325,19 @@ std::optional<bool> ExtractJsonBoolAlias(
     return ExtractJsonBool(body, fallbackKey);
 }
 
+std::string ExtractJsonStringAlias(
+    const std::string& body,
+    const std::string& primaryKey,
+    const std::string& fallbackKey)
+{
+    std::string value = ExtractJsonString(body, primaryKey);
+    if (!value.empty()) {
+        return value;
+    }
+
+    return ExtractJsonString(body, fallbackKey);
+}
+
 olb::HttpResponse JsonResponse(int statusCode, const std::string& body)
 {
     olb::HttpResponse response;
@@ -322,6 +354,49 @@ olb::HttpResponse HandleRequest(const olb::HttpRequest& request, olb::MediaBridg
 
     if (request.method == "GET" && request.path == "/status") {
         return JsonResponse(200, olb::StatusToJson(service->GetStatus()));
+    }
+
+    if (request.method == "GET" && request.path == "/api/v1/audio-monitoring-devices") {
+        std::vector<olb::AudioMonitoringDeviceInfo> devices;
+        std::string error;
+        if (!service->ListAudioMonitoringDevices(&devices, &error)) {
+            std::ostringstream body;
+            body << "{\"ok\":false,\"error\":\"" << olb::JsonEscape(error) << "\"}";
+            return JsonResponse(500, body.str());
+        }
+
+        const auto status = service->GetStatus();
+        std::ostringstream body;
+        body << "{\"ok\":true,\"current\":" << olb::AudioMonitoringDeviceToJson(
+            {status.audioMonitoringDeviceName, status.audioMonitoringDeviceId})
+             << ",\"devices\":" << olb::AudioMonitoringDevicesToJson(devices) << "}";
+        return JsonResponse(200, body.str());
+    }
+
+    if (request.method == "POST" && request.path == "/api/v1/audio-monitoring-device") {
+        const auto deviceId = ExtractJsonStringAlias(request.body, "id", "deviceId");
+        if (deviceId.empty()) {
+            return JsonResponse(400, "{\"ok\":false,\"error\":\"missing audio monitoring device id\"}");
+        }
+
+        const auto deviceName = ExtractJsonStringAlias(request.body, "name", "deviceName");
+        olb::AudioMonitoringDeviceInfo device;
+        device.id = deviceId;
+        device.name = deviceName;
+
+        std::string error;
+        if (!service->SetAudioMonitoringDevice(device, &error)) {
+            std::ostringstream body;
+            body << "{\"ok\":false,\"error\":\"" << olb::JsonEscape(error) << "\"}";
+            return JsonResponse(500, body.str());
+        }
+
+        const auto status = service->GetStatus();
+        std::ostringstream body;
+        body << "{\"ok\":true,\"current\":" << olb::AudioMonitoringDeviceToJson(
+            {status.audioMonitoringDeviceName, status.audioMonitoringDeviceId})
+             << "}";
+        return JsonResponse(200, body.str());
     }
 
     if (request.method == "POST" && request.path == "/api/v1/start") {
@@ -382,6 +457,31 @@ int main(int argc, char** argv)
     }
 
     auto obsController = std::make_unique<olb::LibObsController>();
+
+    if (options.listAudioMonitoringDevices) {
+        olb::BridgeConfig listConfig = options.bridgeConfig;
+        listConfig.autoStartVirtualCamera = false;
+        listConfig.audioMonitoringDeviceId.clear();
+
+        std::string initError;
+        if (!obsController->Initialize(listConfig, &initError)) {
+            std::cerr << initError << "\n";
+            return 1;
+        }
+
+        std::vector<olb::AudioMonitoringDeviceInfo> devices;
+        std::string listError;
+        if (!obsController->GetAudioMonitoringDevices(&devices, &listError)) {
+            std::cerr << listError << "\n";
+            obsController->Shutdown();
+            return 1;
+        }
+
+        std::cout << olb::AudioMonitoringDevicesToJson(devices) << "\n";
+        obsController->Shutdown();
+        return 0;
+    }
+
     olb::MediaBridgeService service(std::move(obsController), options.bridgeConfig);
 
     if (options.bridgeConfig.autoStartVirtualCamera) {

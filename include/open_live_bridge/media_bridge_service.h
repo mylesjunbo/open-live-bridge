@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace olb {
 
@@ -18,6 +19,8 @@ public:
     bool Warmup(std::string* error);
     bool Start(const StartRequest& request, std::string* error);
     bool Stop(std::string* error);
+    bool ListAudioMonitoringDevices(std::vector<AudioMonitoringDeviceInfo>* devices, std::string* error);
+    bool SetAudioMonitoringDevice(const AudioMonitoringDeviceInfo& device, std::string* error);
     BridgeStatus GetStatus() const;
 
 private:
